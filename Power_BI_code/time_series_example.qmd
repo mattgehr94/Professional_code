@@ -1,0 +1,353 @@
+---
+title: "time_series_example"
+format: html
+editor: visual
+---
+
+#libraries
+```{r setup}
+
+library(dplyr)
+library(tidyverse)
+library(bigrquery)
+library(ggplot2)
+library(dplyr)
+library(stats)
+library(gridExtra)
+library(tseries)
+library(forecast)
+```
+
+#loading data and organizing raw data
+```{r}
+qf_cases_raw<- read.csv("C:/Users/Matt/Downloads/SF_contact_data.csv")
+
+
+qf_cases<- qf_cases_raw %>%
+  filter(!Case.Type %in% "Tech Assist",
+         Case.Origin %in% c("Automation","Email","Phone","Web"),
+         Closed == 1,
+         !Subtype %in% NA)%>%
+  mutate(multiple_cases = duplicated(Account.Name)|
+           duplicated(Account.Name, fromLast = T),
+         Date.Time.Closed = na_if(Date.Time.Closed, "")) %>%
+  drop_na(Date.Time.Opened, Date.Time.Closed) %>%
+  separate(Date.Time.Opened, into =c("date_opened","time_opened"), sep = " ", remove = F) %>%
+  separate(Date.Time.Closed, into=c("date_closed","time_closed"), sep = " ", remove = F) %>%
+  mutate(
+    date_closed = mdy(date_closed),
+    date_opened = mdy(date_opened),
+    month_opened = month(date_opened, label = TRUE),
+    year_opened = year(date_opened),
+    month_closed = month(date_closed, label = TRUE),
+    year_closed = year(date_closed),
+    day_opened = day(date_opened),
+    day_closed = day(date_closed),
+    subtype_simplified = case_when(grepl("Buried Service", Subtype)~"Buried Service Issue",
+                                   grepl("Due Date", Subtype)~"Due Date Change",
+                                   grepl("Facilities|Facility", Subtype)~"Facility Issue",
+                                   grepl("Programming", Subtype)~"Programming Issue",
+                                   TRUE~Subtype)
+  ) %>%
+  replace_na(list(time_closed = "00:00:00", time_opened = "00:00:00")) %>%
+  add_count(Account.Name, name = "case_count") %>%
+  mutate(case_count_user = case_when(case_count <= 3 ~"Light_caller",
+                                     case_count >=4 & case_count<= 10 ~"Medium_caller",
+                                     case_count >= 11 & case_count <=15 ~"Heavy_caller",
+                                     case_count >= 16 ~"Extreme_caller")) %>%
+  arrange(Account.Name, Date.Time.Opened) %>%
+  group_by(Account.Name)
+
+count_data<-qf_cases %>%
+  mutate_at(vars(date_closed),.funs = as.Date) %>%
+  mutate(Subtype = case_when(grepl("Speed", Subtype)~"Slow Speed",
+                                TRUE~Subtype)) %>%
+  filter(Subtype %in% c("Slow Speed","Speed","Wireless Setup/Troubleshooting","Streaming/Other","Programming - Speed Issue","Outage"),
+         Case.Origin %in% c("Phone","Web"),
+         date_closed >= "2021-01-01" & date_closed <= "2023-9-30") %>%
+  select(date_closed, Case.Origin, Subtype) %>%
+  group_by(date_closed, Case.Origin, Subtype) %>%
+  summarise(counts = n()) %>%
+  arrange(date_closed) %>%
+  drop_na()
+
+write.csv(qf_cases, "C:/Users/Matt/Downloads/SF_cases_data.csv", row.names = F)
+write.csv(count_data, "C:/Users/Matt/Downloads/SF_case_count_data.csv", row.names = F)
+
+
+```
+
+#time series
+
+##Basic Monthly plots
+
+```{r}
+# Plot all cases by day
+ggplot(count_data, aes(x = date_closed, y = counts)) +
+  geom_line(aes(group = 1), color = "blue") + # Group = 1 ensures it doesn't split lines by factors
+  geom_vline(xintercept = as.Date("2023-07-24"), linetype = "dashed", color = "red")+
+  ggtitle("Daily Cases Closed") +
+  xlab("Date") + ylab("Number of Cases") +
+  theme_minimal()
+
+
+ggplot(count_data, aes(x = date_closed, y = counts, color = Case.Origin)) +
+  geom_line(aes(group = Case.Origin)) + 
+  geom_vline(xintercept = as.Date("2023-07-24"), linetype = "dashed", color = "red")+
+  ggtitle("Daily Cases Closed by Origin") +
+  xlab("Date") + ylab("Number of Cases") +
+  labs(color = "Origin") +
+  theme_minimal()
+
+
+ggplot(count_data, aes(x = date_closed, y = counts, color = Subtype)) +
+  geom_line(aes(group = Subtype)) + 
+  geom_vline(xintercept = as.Date("2023-07-24"), linetype = "dashed", color = "red")+
+  ggtitle("Daily Cases Closed by Subtype") +
+  xlab("Date") + ylab("Number of Cases") +
+  labs(color = "Subtype") +
+  theme_minimal()
+
+```
+
+##Decomposing (trend seasonality and error)
+
+```{r warning = F, message = F, fig.width=20, fig.height=9.5}
+#Multiplicative decomposition was chosen to account for the general increase in QF usage over the 2 years of data 
+
+
+#observed = raw 
+#trend = long-term movement in the time series, removing regulat patterns like daily or weekly fluctuations and the random noise 
+#Seasonal = captures regular patterns in the data that repeat at regular intervals. Weekly seasonality was selected and it shows the typical pattern that repeats every week.
+#Random = error/ what is left oer the trend and seasonal componenets have been removed. This looks sort of like white noise 
+#x-axis = days but since we have the seasonality set to 7 the function captures the seasonality of every 7 days. Another way to think about it is each individual point on the x-axis is a day, the pattern you see in the 'seasonal' component in the decomposition repeated 7 of those points. 
+
+
+# Nested loop to plot time series for each combination of col1 and col2
+plot_list <- list()
+for(level1 in unique(count_data$Case.Origin)) {
+  for(level2 in unique(count_data$Subtype)) {
+   
+    # Subset data for this combination
+    subset_data <- count_data %>%
+      filter(Case.Origin == level1, Subtype == level2) %>%
+      arrange(date_closed)
+   
+    # Create a time series object
+    ts_data <- ts(subset_data$counts, frequency = 7)
+   
+    # Decompose the time series
+    decomposed <- decompose(ts_data, type = "multiplicative")
+   
+    # Plot the decomposition
+    p_observed <- ggplot(data.frame(Time = 1:length(decomposed$x), Observed = decomposed$x), aes(x = Time, y = Observed)) +
+      geom_line() +
+      theme_bw()+
+      ggtitle(paste("Observed for", level1, "and", level2))
+   
+    p_trend <- ggplot(data.frame(Time = 1:length(decomposed$trend), Trend = decomposed$trend), aes(x = Time, y = Trend)) +
+      geom_line() +
+      theme_bw()+
+      ggtitle(paste("Trend for", level1, "and", level2))
+   
+    p_seasonal <- ggplot(data.frame(Time = 1:length(decomposed$seasonal), Seasonal = decomposed$seasonal), aes(x = Time, y = Seasonal)) +
+      geom_line() +
+      theme_bw()+
+      ggtitle(paste("Seasonal for", level1, "and", level2))
+   
+    p_random <- ggplot(data.frame(Time = 1:length(decomposed$random), Random = decomposed$random), aes(x = Time, y = Random)) +
+      geom_line() +
+      theme_bw()+
+      ggtitle(paste("Random for", level1, "and", level2))
+   
+    combined_plot <- grid.arrange(p_observed, p_trend, p_seasonal, p_random, ncol = 2)
+   
+    # Add to list (you could save plots to a file instead if you prefer)
+    plot_list[[paste(level1, level2)]] <- combined_plot
+  }
+}
+
+
+```
+
+##Stationarity testing
+
+```{r}
+#Running through the ADF test and looking for that sweet p > .05 to reject stationarity 
+
+# List to store the results
+adf_results <- list()
+
+# Loop through each level of col1
+for(level1 in unique(count_data$Case.Origin)) {
+ 
+  # Loop through each level of col2
+  for(level2 in unique(count_data$Subtype)) {
+   
+    # Filter data for the current combination of levels
+    temp_data <- count_data %>%
+      filter(Case.Origin == level1, Subtype == level2) %>%
+      arrange(date_closed)
+   
+    # Run the ADF test
+    adf_test <- adf.test(temp_data$counts, alternative = "stationary")
+   
+    # Store the p-value (and other results if desired)
+    adf_results[[paste(level1, level2, sep = "_")]] <- adf_test$p.value
+  }
+}
+
+# Convert the results list to a data frame for easier viewing
+adf_results_df <- as.data.frame(adf_results)
+adf_results_df
+
+#It looks like the only combo that is not stationary is wireless set/troublehsooting when contact is made by phone, and streaming/other is created by phone but that one is really close to being non-stationary 
+#names of columns with values greater than .05
+non_stationary<- adf_results_df %>%
+  summarise(across(everything(), ~any(. > 0.05))) %>%
+  select(where(~. == TRUE)) %>%
+  names()
+non_stationary
+```
+
+##Fitting
+
+```{r}
+#Using auto.arima function that will automatically select the best ARIMA model based on the AIC value 
+
+
+# List to store the models
+arima_models <- list()
+
+# Loop through each level of col1
+for(level1 in unique(count_data$Case.Origin)) {
+ 
+  # Loop through each level of col2
+  for(level2 in unique(count_data$Subtype)) {
+   
+    # Filter data for the current combination of levels
+    temp_data <- count_data %>%
+      filter(Case.Origin == level1, Subtype == level2) %>%
+      arrange(date_closed)
+   
+    # Check if this combination is one of those that were non-stationary
+    if(paste(level1, level2, sep = "_") %in% non_stationary) {
+      # Use differencing (d=1 in ARIMA) if the series was found to be non-stationary
+      model <- auto.arima(temp_data$counts, d=1, seasonal=TRUE)
+    } else {
+      # If series was stationary, let auto.arima decide the order of differencing
+      model <- auto.arima(temp_data$counts, seasonal=TRUE)
+    }
+   
+    # Store the model
+    arima_models[[paste(level1, level2, sep = "_")]] <- model
+  }
+}
+
+#AR terms: indicates the number of autoregressive terms in the model. It represents the relationship between an observation and a number of lagges observations 
+#Differencing: The number of times raw observations are differenced to make the time series stationary. D =1 means that we are taking the first difference (subtracting the presiouvs observation from the current observation) makes it stationary.
+#MA terms: The number of lagged forecast errors that should go into the ARIMA model. It represents the relationship between the error term and the lagged observations of the time series
+arima_models
+
+```
+
+###Validation of models
+
+```{r}
+validation_errors <- list()  # To store the errors
+
+# Loop through each model in the arima_models list
+for(name in names(arima_models)) {
+
+  # Extract data for this combination
+  temp_data <- count_data %>%
+    filter(paste(Case.Origin, Subtype, sep = "_") == name) %>%
+    arrange(date_closed)
+ 
+  # Split the data based on date
+  train_data <- temp_data[temp_data$date_closed < "2023-04-01", ]
+  validation_data <- temp_data[temp_data$date_closed >= "2023-04-01", ]
+ 
+  # Fit ARIMA to the training data
+  if(name %in% non_stationary) {
+    model <- auto.arima(train_data$counts, d=1, seasonal=TRUE)
+  } else {
+    model <- auto.arima(train_data$counts, seasonal=TRUE)
+  }
+
+  # Forecast for the validation period (6 months or approximately 180 days)
+  fc <- forecast(model, h=nrow(validation_data))
+ 
+  # Calculate the MSE
+  mse <- mean((validation_data$counts - fc$mean)^2)
+ 
+  # Store the MSE
+  validation_errors[[name]] <- mse
+}
+
+# Print the errors
+validation_errors
+
+#MSE for each level of combination of data. Lower the value the better the prediction 
+
+
+```
+
+###Plotting fits and forecasts
+
+```{r, fig.width=20, fig.height=9.5}
+h = 90
+past_obs = 720
+forecasts <- list()
+# Loop through the arima models
+for(model_name in names(arima_models)) {
+ 
+  # Extract the model
+  model <- arima_models[[model_name]]
+ 
+  # Forecast future data points
+  forecasted_data <- forecast(model, h = h, level = 0.95, bootstrap = TRUE)
+ 
+  # Store the forecast, fitted, and actual data
+  forecasts[[model_name]] <- list(
+    fitted = tail(fitted(model), past_obs),
+    forecast = forecasted_data,
+    actual = tail(count_data[count_data$Case.Origin == unlist(strsplit(model_name, "_"))[1] &
+                    count_data$Subtype == unlist(strsplit(model_name, "_"))[2],]$counts, past_obs + h)
+  )
+ 
+   # Plotting
+  ts_start <- as.Date("2021-09-30")
+  ts_end <- as.Date("2023-12-31")
+  forecast_end <- ts_end + days(h)
+ 
+  # Confidence intervals for the fitted values
+  fitted_se <- sqrt(model$sigma2)
+ 
+  # Setting up the plot with actual data
+  plot(c(ts_start, forecast_end), range(c(forecasts[[model_name]]$actual,
+                                         forecasts[[model_name]]$forecast$upper,
+                                         forecasts[[model_name]]$forecast$lower)),
+       type = "n", xlab = "Date", ylab = "Counts", main = model_name)
+ 
+  # Correct the lengths and dates for the lines
+  actual_dates <- seq(ts_start, ts_end, by = "day")[1:length(forecasts[[model_name]]$actual)]
+  fitted_dates <- seq(ts_end - days(past_obs), ts_end - 1, by = "day")[1:length(forecasts[[model_name]]$fitted)]
+  forecast_dates <- seq(ts_end, forecast_end - 1, by = "day")[1:length(forecasts[[model_name]]$forecast$mean)]
+ 
+  # Adding the actual data, fitted data, and forecasts
+  lines(actual_dates, forecasts[[model_name]]$actual, col = "blue", lwd = 2)
+  lines(fitted_dates, forecasts[[model_name]]$fitted, col = "green", lwd = 2)
+  lines(forecast_dates, forecasts[[model_name]]$forecast$mean, col = "red", lwd = 2)
+ 
+  # Adding confidence intervals
+  lines(fitted_dates, forecasts[[model_name]]$fitted + 1.96*fitted_se, col = "green", lty = 2)
+  lines(fitted_dates, forecasts[[model_name]]$fitted - 1.96*fitted_se, col = "green", lty = 2)
+  lines(forecast_dates, forecasts[[model_name]]$forecast$upper, col = "red", lty = 2)
+  lines(forecast_dates, forecasts[[model_name]]$forecast$lower, col = "red", lty = 2)
+ 
+  # Legend
+  legend("topright", legend = c("Observed", "Fitted", "Forecasted", "95% CI"),
+         col = c("blue", "green", "red", "grey"), lwd = 2, lty = c(1,1,1,2), bty = "n")
+}
+```

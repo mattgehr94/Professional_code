@@ -1,0 +1,126 @@
+---
+title: "Text_cleaning"
+format: html
+editor: visual
+---
+
+#packages
+```{r}
+library(tm)
+library(NLP)
+library(readr)
+library(stringr)
+library(readxl)
+library(RTextTools)
+library(udpipe)
+library(dplyr)
+library(textclean)
+library(tidyverse)
+```
+
+
+#Text Cleaning and Preprocessing function
+```{r}
+clean_text <- function(text) {
+  # Convert to lowercase
+  text <- tolower(text)
+  #Replaces contractions with full word
+  text<- replace_contraction(text)
+  #Replaces numbers with the word for number 
+  text<- replace_number(text)
+  #Replaces emoticons. Not great with replacing commas so finding an alternative outside the 'cleantext' package.
+  text<- gsub("[\r\n]", " ", text)
+  #Replaces HTLM 
+  text<- replace_html(text)
+  #Replcaes imcomplete sentences
+  text<- replace_incomplete(text)
+  #Return to deal with mispelled words 
+  #text<- mispelling words function
+  #Adding missing endmarks for sentences. Explore this more 
+  #text<- add_missing_endmark(text)
+  #Replace non-ascii text . explore this further
+  #text<- replace_non_ascii()
+  #Replaces unsplit sentences. Investigate further
+  #text<- textshape::split_sentence(text)
+  
+  return(text)
+}
+
+interview_data$cleaned_text <- sapply(interview_data$text, clean_text)
+
+#Remove the tokenized text and other similar columns since they are in list form and write.csv can't handle that
+exploration<- interview_data %>%
+  filter(SID == 1) 
+
+
+exploration$cleaned_text
+replace_emoticon(exploration$text)
+
+```
+
+#Tokenization 
+```{r}
+# Tokenization function
+tokenize_text <- function(text) {
+  # Tokenize the text into words
+  tokens <- unlist(str_split(text, "\\s+"))
+  
+  return(tokens)
+}
+```
+
+#Removing stopwords
+```{r}
+# Stopword removal function
+remove_stopwords <- function(tokens) {
+  # Remove common stopwords
+  tokens <- tokens[!(tokens %in% stopwords("en"))]
+  
+  return(tokens)
+}
+```
+
+#Lammatizing words
+```{r}
+# Load English language model for udpipe
+ud_model <- udpipe_download_model(language = "english", model_dir = "path/to/udpipe_model")
+ud_model <- udpipe_load_model(ud_model$file_model)
+
+# Lemmatization function using udpipe
+lemmatize_text <- function(tokens) {
+  # Lemmatize the tokens
+  lemmatized_annotations <- udpipe_annotate(ud_model, x = tokens)
+  
+  # Extract lemmsatized text from the annotations
+  lemmatized_text <- lemmatized_annotations$lemma
+  
+  return(lemmatized_text)
+}
+
+```
+
+#Text preprocessing
+```{r}
+# Example text preprocessing
+interview_data$cleaned_text <- sapply(interview_data$text, clean_text)
+interview_data$tokenized_text <- sapply(interview_data$cleaned_text, tokenize_text)
+interview_data$processed_text <- sapply(interview_data$tokenized_text, remove_stopwords)
+interview_data$lemma_text <- sapply(interview_data$processed_text, lemmatize_text)
+
+```
+
+#Exploration
+```{r}
+#Remove the tokenized text and other similar columns since they are in list form and write.csv can't handle that
+exploration<- interview_data %>%
+  filter(SID == 1) 
+
+write.csv(x = exploration %>%
+  select(-c(tokenized_text, processed_text, lemma_text)), file = "C:/Users/Matt/Desktop/temp.csv")
+
+exploration$text
+exploration$cleaned_text
+exploration$tokenized_text
+exploration$processed_text
+exploration$lemma_text
+```

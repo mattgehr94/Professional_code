@@ -1,0 +1,38 @@
+---
+title: "Quanteda_classification"
+format: html
+editor: visual
+---
+
+#packages
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(quanteda)
+library(quanteda.sentiment)
+
+print(data_dictionary_LSD2015, max_nval = 5)
+```
+
+#load pre-processed and tokenized data
+
+```{r}
+load(file= paste0(getwd(),"/KPMG_interview_DFM.RData"))
+load(file= paste0(getwd(),"/KPMG_interview_token_data.RData"))
+```
+
+Dictionaries contain lists of words that correspond to different categories. We count how often words that are associated with different categories are represented in each review.
+
+#Dictionairy classification
+
+```{r}
+#loading in the dictionariy AFINN that was created from the "quanteda.sentiment" package
+Afinn_dict<- dictionary(data_dictionary_AFINN)
+
+
+
+dfm(data_frequency_maxtrix, groups = overall_experience, dictionary = Afinn_dict)
+
+dfm_group(data_frequency_maxtrix, groups = )
+```

@@ -1,0 +1,121 @@
+---
+title: "Quanteda_text_preparation"
+format: html
+editor: visual
+---
+
+This follows the Quanteda method for preparing text for furhter analysis.
+
+The processes is as follows: 1. Re-formats some of the text (replaces numbers with their words etc) 2. Tokenizes all the words within the text 3. Builds a document frequency matrix 4. Removes stopwords
+
+#packages
+
+```{r}
+library(dplyr)
+library(textclean)
+library(tidyverse)
+library(quanteda)
+library(readxl)
+```
+
+#Loading data and minor replacing (replacing numbers and ordinals)
+
+```{r}
+interview_data<- read_excel("../../../../../Sample_data/KPMG_interview_responses.xlsx")
+
+#Function to replace numbers, ordinal, and separate ranges 
+replace_text<- function(text){
+  
+  #Separate number ranges for later conversion (3-4 to 3 to 4)
+  # Replace hyphen-separated number ranges
+  text <- gsub("(\\d+)-(\\d+)", "\\1 to \\2", text, perl = TRUE)
+  #Replace colon-separated number ranges
+  text <- gsub("(\\d+):(\\d+)", "\\1 to \\2", text, perl = TRUE)
+  #Replace & with 'and' with a space before and after
+  text <- gsub("([a-zA-Z])&([a-zA-Z])", "\\1 and \\2", text)
+  
+  #Replace numbers (1 to one)
+  text<- replace_number(text, num.paste = T)
+  #Replace ordinal (1st to first)
+  text<- replace_ordinal(text, num.paste = T)
+  
+}
+
+interview_data$replaced_text<- replace_text(interview_data$text)
+```
+
+#Quanteda Package
+
+Corpus Def: A corpus is designed to be a more or less static container of texts with respect to processing and analysis. This means that the texts in corpus are not designed to be changed internally through (for example) cleaning or pre-processing steps, such as stemming or removing punctuation. Rather, texts can be extracted from the corpus as part of processing, and assigned to new objects, but the idea is that the corpus will remain as an original reference copy so that other analyses – for instance those in which stems and punctuation were required, such as analysing a reading ease index – can be performed on the same corpus.
+
+##Creating Corpus (needed because a ton of functions work on these and tutorials often use these as well).
+
+```{r}
+#install.packages("quanteda", dependencies = T)
+library(quanteda)
+interview_corpus<- corpus(interview_data, text_field = "replaced_text", docid_field = "SID")
+
+summary(interview_corpus)
+
+```
+
+##Tokenization (pre-processing the tokens). A token is each individual word in a text (but it could also be a sentence, paragraph, or character). This is why we call creating a “bag of words” also tokenizing text. In a nutshell, a DFM is a very efficient way of organizing the frequency of features/tokens but does not contain any information on their position. In our example, the features of a text are represented by the columns of a DFM and aggregate the frequency of each token.
+
+```{r}
+sentence_tokens<- tokens(interview_corpus, what = 'sentence')
+word_tokens<- tokens(interview_corpus, what = 'word1')
+character_tokens<- tokens(interview_corpus, what = 'character')
+
+interview_tokens<- tokens(interview_corpus, include_docvars = T)
+
+clean_tokens<- tokens(interview_corpus, 
+                      remove_punct = T, 
+                      remove_symbols = T, 
+                      remove_numbers = T, 
+                      remove_url = T, 
+                      remove_separators = T,
+                      split_hyphens = T,
+                      split_tags = T,
+                      include_docvars = T)
+
+
+```
+
+##document term matrix (Quanteda package calls it document frequency matrix but it is the same thing). This also makes everything to lowercase, stem the words (optional), and remove stopwords(and,or etc. Full list is available)
+
+```{r}
+#Creating the matrix 
+token_df<- dfm(x = clean_tokens, tolower = T) %>%
+  dfm_remove(., stopwords("english")) %>%
+  convert(., to = 'data.frame')
+
+data_frequency_maxtrix<- dfm(x = clean_tokens, tolower = T) %>%
+  dfm_remove(., stopwords("english"))
+
+dfm_sort(data_frequency_maxtrix, decreasing = T, margin = "both")
+
+
+library(quanteda.textplots)
+library(quanteda.textstats)
+
+textstat_frequency(data_frequency_maxtrix, groups = overall_experience)
+
+set.seed(132)
+textplot_wordcloud(data_frequency_maxtrix, max_words = 100)
+
+
+```
+#combining token matrix and identifiers
+```{r}
+interview_token_data<- merge.data.frame(interview_data %>% rename("date_raw" = date,
+                                                       "offer_raw" = offer,
+                                                       "overall_experience_raw" = overall_experience,
+                                                       "difficulty_raw" = difficulty,
+                                                       "language_raw" = language,
+                                                       "text_raw" = text), token_df, by.x = "SID", by.y = "doc_id", no.dups = T)
+
+save(interview_token_data, file= paste0(getwd(),"/KPMG_interview_token_data.RData"))
+save(data_frequency_maxtrix, file= paste0(getwd(),"/KPMG_interview_DFM.RData"))
+
+```
+

@@ -1,0 +1,43 @@
+---
+title: "Sentiment_analysis_example"
+format: html
+editor: visual
+---
+
+#packages
+```{r}
+library(reticulate)
+reticulate::install_miniconda()
+
+devtools::install_github("farach/huggingfaceR")
+
+install.packages("text")
+library(text)
+```
+
+```{r}
+library(huggingfaceR)
+
+distilBERT <- hf_load_pipeline(
+  model_id = "distilbert-base-uncased-finetuned-sst-2-english", 
+  task = "text-classification"
+  )
+
+gd_review<- c("I started by emailing an alum of the law school who worked for KPMG. I had previously applied to the company through its online system. Interviews appear to be gained through networking but this may be a function of the economy. They did not appear to interview on campus but as an LLM, I am not apart of the on campus interview process. I was contacted by KPMG's HR person and I was scheduled for an interview. During the first interview I spoke with 2 people. Both attorneys and both accountants. They were both experienced attorneys who had worked for other employers and had recently been hired by KPMG. People seem to gain some promotions by switching companies instead of being promoted upwards. Neither interview went great. I did not feel good about the interview process. When I was obtaining my JD, I interviewed with a number of law firms so I think I know how to interview with attorneys but these interviews did not go well. I was pursuing employment because I anticipated that I would obtain my LLM in May and I did obtain my LLM in May of 2011. But, I had a second interview with their accountants in the SALT department. I spoke with 5 people. I was tired by the end of the interviews. They don't put people up in hotels the day before interviews like law firms do. I think I know how to explain my experience to lawyers but I do not know whether those explanations work for accountants at an accounting firm. I don't think they understood the type of work I used to do at Sullivan & Cromwell. It did not seem to be a fit at all. It just was not a fit. I cannot explain their culture but it wasn't a fit. I kept trying to understand what an attorney does at an accounting firm. I know what attorneys do at law firms.")
+
+distilBERT(gd_review)
+```
+#Example datasets
+```{r}
+emo <- hf_load_dataset(
+  dataset = "emo", 
+  split = "train"
+  )
+```
+```{python}
+
+
+
+```
+
+

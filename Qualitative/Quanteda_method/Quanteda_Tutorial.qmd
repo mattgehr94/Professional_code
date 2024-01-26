@@ -1,0 +1,551 @@
+---
+title: "Quanteda_Tutorial"
+format: html
+editor: visual
+---
+
+This document will follow a quanteda tutorial that I found online at this website: https://tutorials.quanteda.io/introduction/install/ 
+
+#Packages
+```{r}
+#Packages that are needed to follow the tutorial given above
+
+#install.packages("quanteda")
+#install.packages("quanteda.textmodels")
+#install.packages("quanteda.textstats")
+#install.packages("quanteda.textplots")
+#install.packages("readtext")
+#devtools::install_github("quanteda/quanteda.corpora")
+# install.packages("spacyr")
+# install.packages("newsmap")
+# install.packages("seededlda")
+
+library(quanteda)
+library(quanteda.textmodels)
+library(quanteda.textstats)
+library(quanteda.textplots)
+library(readtext)
+library(quanteda.corpora)
+library(spacyr)
+library(newsmap)
+library(seededlda)
+library(text2vec) #Semantic network analysis
+library(lubridate)#needed for relative frequency analysis 
+#Packages needed for my own coding style 
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+
+#packages needed for my built functions 
+library(textclean)
+#Function to adjust raw text 
+replace_text<- function(text){
+  
+  #Separate number ranges for later conversion (3-4 to 3 to 4)
+  # Replace hyphen-separated number ranges
+  text <- gsub("(\\d+)-(\\d+)", "\\1 to \\2", text, perl = TRUE)
+  #Replace colon-separated number ranges
+  text <- gsub("(\\d+):(\\d+)", "\\1 to \\2", text, perl = TRUE)
+  #Replace & with 'and' with a space before and after
+  text <- gsub("([a-zA-Z])&([a-zA-Z])", "\\1 and \\2", text)
+  
+  #Replace numbers (1 to one)
+  text<- replace_number(text, num.paste = T)
+  #Replace ordinal (1st to first)
+  text<- replace_ordinal(text, num.paste = T)
+  
+  return(text)
+  
+}
+```
+
+When loading data having a .csv file with a column containing the text is part of the tutorial
+#Loading in data 
+```{r}
+interview_data<- read.csv("../../../../../Sample_data/KPMG_interview_responses.csv") %>%
+  mutate(text = replace_text(text),
+         date = as.Date(date, format = "%m/%d/%Y"))
+```
+
+#Workflow: There are three basic types of objects in Quanteda. 
+
+Corpus: 
+saves character strings and variables in a dataframe. 
+Combines texts with document-level variables
+
+Tokens: 
+Stores tokens in a list of vectors. 
+More efficient than character strings, but preserves positions of words. 
+Positional (string-of-words) analysis is performed using textstat_collocations(), tokens_ngrams() and tokens_select() or fcm() with window option.
+
+Document-features Matrix (DFM): 
+Represents frequencies of features in documents in a matrix 
+The most efficient structure, but it does not have information on positions of words
+Non-positional (bag-of-words) analysis are performed using many od the textstat_* and textmodel_* functions 
+
+
+#Corpus
+
+##Construct a corpus
+We are using the "data frame" option since we are working with a .csv file. 
+```{r}
+#Constructing a corpus from the 'text' column in the interview data dataframe
+
+corp_interview<- corpus(interview_data, text_field = 'text')
+print(corp_interview)
+
+summary(corp_interview, 5)
+
+#Adding identifier to docnames
+docid<- paste(interview_data$SID)
+docnames(corp_interview)<- docid
+print(corp_interview)
+```
+
+
+##Document-Level variables:
+Quanteda's objects keep information associated with documents. they are called "document-level variables" or 'docvars' and are accessed using docvars
+```{r}
+head(docvars(corp_interview), 10)
+
+#Extracting document-level variables
+
+docvars(corp_interview, field = 'offer')
+corp_interview$difficulty
+
+#Assigning document-level variables
+docvars(corp_interview, field = 'offer')<- ifelse(corp_interview$offer == 'accepted', 1,
+                                                         ifelse(corp_interview$offer == 'no_offer' , 0, -1))
+
+#Subsetting corpus 
+corp_declined<- corpus_subset(corp_interview, offer == -1)
+head(corp_declined)
+ndoc(corp_declined)
+##Different way of subsetting by a list 
+corp_accepted<- corpus_subset(corp_interview, offer %in% c("accepted"))
+head(corp_accepted)
+
+
+```
+##Change units of Texts.corpus_reshape() allows you to change the unit of texts between documents, paragraphs, and sentences. 
+```{r}
+corp_interview_sentences<- corpus_reshape(corp_interview, to = 'sentences')
+head(corp_interview_sentences)
+ndoc(corp_interview_sentences)
+
+#Restore original
+corp_doc<- corpus_reshape(corp_interview, to = 'documents')
+ndoc(corp_doc)
+```
+##Extract tags from texts. Using corpus_segment() you can extract segments of texts and tags from documents. This is particularly useful when you analyze sections of documents or transcripts separately  
+```{r}
+#only works if input text file has tagged parts of the text
+corp_tagged <- corpus(c("##INTRO This is the introduction.
+                         ##DOC1 This is the first document.  Second sentence in Doc 1.
+                         ##DOC3 Third document starts here.  End of third document.",
+                        "##INTRO Document ##NUMBER Two starts before ##NUMBER Three."))
+corp_sect <- corpus_segment(corp_tagged, pattern = "##*")
+
+cbind(docvars(corp_sect), text = as.character(corp_sect))
+print(corp_sect)
+
+#Speaker Identifiers. Works if the transcripts have identifiers of who is talking when 
+corp_speeches <- corpus("Mr. Smith: Text.
+                        Mrs. Jones: More text.
+                        Mr. Smith: I'm speaking, again.")
+corp_speakers <- corpus_segment(corp_speeches, pattern = "\\b[A-Z].+\\s[A-Z][a-z]+:", valuetype = "regex")
+cbind(docvars(corp_speakers), text = as.character(corp_speakers))
+
+#Can use the corpus_segment function to separate sentences but it would be better and probably more accurate to use the corpus_reshape() functin that is described above 
+
+
+```
+#Tokens
+Tokens segment texts in a corpus into tokens (words or sentences) by word boundaries 
+##Constructing tokens 
+```{r}
+#Removing all objects excpet the data since it could get a little crowded in the environment 
+rm(list = setdiff(ls(), "interview_data"))
+
+#Corpus 
+corpus_interview<- corpus(interview_data, text_field = "text")
+
+#By default tokens() only removes separators (typically white spaces), but you can also remove punctuation and numbers 
+tokens_interview<- tokens(corpus_interview)
+
+#removes punctuations 
+tokens_interview_punt<- tokens(corpus_interview, remove_punct = TRUE)
+```
+##Keywords-n-contexts
+Allows us ot see how keywords are used in the actual contexts in a concordance view
+```{r}
+kw_interivew<- kwic(tokens_interview, pattern = 'KPMG')
+head(kw_interivew)
+#multiple examples
+kw_interivew2<-kwic(tokens_interview, pattern = c("KPMG", "Interview"))
+kw_interivew2
+
+#window argument allows for amount of words to be displayed around the specified key word 
+kw_interview3<- kwic(tokens_interview, pattern = c("KPMG*", "Interview*"), window = 7)
+kw_interview3
+
+#find multi-word expresisons, separate words by white space and wrap the character vector by phrase()
+kw_interview4<- kwic(tokens_interview, pattern = phrase("Senior Associate*"))
+kw_interview4
+View(kw_interview4)
+```
+##Select Tokens
+We can remove tokens that we are not interested in using. Most of the time it is 'stopwords' but can be customized for specific things 
+```{r}
+tokens_interview_nostop<- tokens_select(tokens_interview, pattern = stopwords('en'), selection = 'remove')
+print(tokens_interview_nostop)
+
+#Tokens_remove() is an alias to tokens_select(selection = 'remove') so the code below is equivalent
+tokens_interview_nostop2<- tokens_remove(tokens_interview, pattern = stopwords('en'))
+tokens_interview_nostop2
+
+#Removing tokens changes the lengths of the documents, but they remind hte same if you set padding = true. 
+tokens_interview_nostop3<- tokens_remove(tokens_interview, pattern = stopwords('en'), padding = T)
+tokens_interview_nostop3
+
+#Interestd in certain words
+tokens_interview_associate<- tokens_select(tokens_interview, pattern = c("associate","KPMG"), padding =T)
+tokens_interview_associate
+
+#Interested in certain words with window 
+tokens_interview_associate2<- tokens_select(tokens_interview, pattern = c("senior","KPMG"), padding = T, window = 10)
+View(tokens_interview_associate2)
+```
+##Compound tokens
+```{r}
+#Can do various multi-word expressions 
+kw_intetview_multi<- kwic(tokens_interview, pattern = phrase(c("Senior Associate*","KPMG*")), window = 10)
+View(kw_intetview_multi)
+
+#Preserve these expressions in a bag-of-word analysis, you have to compund thme using tokens_compound()
+tokens_interview_compound<- tokens_compound(tokens_interview, pattern = phrase(c("Senior Associate*","KPMG*")))
+tokens_interview_compound
+kw_interview_compound<- kwic(tokens_interview_compound, pattern = c("Senior Associate*", "KPMG*"))
+kw_interview_compound
+```
+##Look up dictionary
+tokens_lookup() is the most flexible dictionary look up function in quanteda. Using dictionary() we can import dictionary files in the Wordstat, LIWC, Yoshicoder, Lexicoder and YAML formats. 
+```{r}
+#This is part of the quanteda package. It is the Lexicoder Sentiment Dictionary (LSD) 2015. It has a bunch of word patterns that are categorized into 'negative', 'positive', 'neg_positive' (word patterns indicating a positive word preceded by a negation "not good"), and 'neg_negative' (word patterns indicating a negative word preceded by a negation that convey and overall positive sentiment "not bad").
+LSD_dict<- data_dictionary_LSD2015 
+
+length(LSD_dict)
+names(LSD_dict)
+
+#Examples of neg_positive in the dictionary
+LSD_dict[["neg_positive"]]
+#Examples of neg_negative in the dictionary
+LSD_dict[["neg_negative"]]
+
+#The levels argument determines the keys to be recorded in a resulting tokens object 
+token_interview_level1<- tokens_lookup(tokens_interview, dictionary = LSD_dict, levels = 1)
+token_interview_level1
+
+#We can explore the dictionary levels itself with 
+dictionary(LSD_dict)
+##Example with multiple levels since the LSD dict only has 4 but the newsmap has nested levels 
+dictionary(data_dictionary_newsmap_en)
+
+#We can run a keyword-in-context analysis by looking up mentions of specific levels of the selected dictionary
+kwic(tokens_interview, LSD_dict[['negative']])
+
+#We can also define our own dictionary 
+manual_dict<- dictionary(list(negative = c("bad","hard","difficult"),
+                              positive = c("good","easy", "not difficult")))
+manual_dict
+
+man_dict_tokens<- tokens_lookup(tokens_interview, dictionary = manual_dict)
+View(man_dict_tokens)
+```
+##Generate N-Grams
+N-grams are a sequence of tokens from already tokenized text objects
+```{r}
+#The length determines how many the tokens are segmented. So 2:4 shows how the tokens can be sequenced by groups of 2 and then groups of 3 and then groups of 4 and so on 
+tokens_interview_ngram<- tokens_ngrams(tokens_interview_punt, n= 2:10)
+tokens_interview_ngram[[1]]
+
+#Tokens_ngrams() also supports skip to generate skip-grams. This produces the sequence but qwill skip over a range (provided by the skip argument) and will combine over both ranges. For example, the first few words of the first example text is "The interview process for" but with skip we see 'The_process' and 'The_for' so the word 'interview' is skipped and the n-gram has n=2 which is the sequence.
+tokens_interview_skip<- tokens_ngrams(tokens_interview_punt, n = 2, skip = 1:2)
+tokens_interview_skip
+
+#Selective n-grams. we can use the tokens_compound to geenrate n-grams more selectively. For example we can make a negation bi-gram using phrase and a wild card regex *
+tokens_interview_neg_bigram<- tokens_compound(tokens_interview, pattern = phrase("senior *"))
+tokens_interview_neg_bigram_select<- tokens_select(tokens_interview_neg_bigram, pattern = phrase("senior_*"))
+tokens_interview_neg_bigram_select
+```
+
+#Document Feature Matrix 
+```{r}
+#Removing all objects excpet the data since it could get a little crowded in the environment 
+rm(list = setdiff(ls(), "interview_data"))
+```
+##Construct a DFM
+```{r}
+corp_interview<- corpus(interview_data, text_field = 'text', docid_field = "SID") #docid_field is how we retain the 'identifer' for each respondent
+toks_interview<- tokens(corp_interview, remove_punct = T, remove_symbols = T,remove_numbers = T) 
+dfmat_inter<- dfm(toks_interview)
+dfmat_inter
+#number of documents
+ndoc(dfmat_inter)
+#number of features 
+nfeat(dfmat_inter)
+#docnames 
+docnames(dfmat_inter)
+#View feature names 
+featnames(dfmat_inter)
+
+#Can use rowSeums and colSums to calculate marginals. Just shows how many features of 'tokens' per response
+rowSums(dfmat_inter)
+#top features or the most frequent features 
+topfeatures(dfmat_inter, 10)
+
+#Converting the frequency count ot a proportion within documents. The textstat_frequency() described in chapter 4 offers more advanced functionalities and returns a dataframe so that can be used later 
+dfmat_inter_prop<- dfm_weight(dfmat_inter, scheme = 'prop')
+dfmat_inter_prop
+
+#Weight the frequency count by uniqueness of the features across documents 
+dfmat_inter_unique<- dfm_tfidf(dfmat_inter)
+dfmat_inter_unique
+```
+##Select features 
+```{r}
+#select feature from a DFM using dfm_select()
+dfmat_inter_nostop<- dfm_select(dfmat_inter, pattern = stopwords('en'), selection = 'remove')
+dfmat_inter_nostop
+
+#also dfm_remove. This was in the 'tokens' stage as well but some analysis (topic modeling etc) might benefit more from removing stopwords at this stage to allow for more flexability
+
+dfmat_inter_nostop2<- dfm_remove(dfmat_inter, pattern = stopwords('en'))
+dfmat_inter_nostop2
+
+#can also select features based on the length of features. 
+dfmat_inter_long<- dfm_keep(dfmat_inter, min_nchar = 7) #Keeps features/tokens that are a minimal character length 
+dfmat_inter_long
+
+#combining with the top features
+topfeatures(dfmat_inter_long, 10)
+
+#dfm_trim selects features based on feature frequencies 
+dfmat_inter_freq<- dfm_trim(dfmat_inter, min_termfreq = 10)
+dfmat_inter_freq
+#can use the dfm_trim for proportions 
+dfmat_inter_docfreq<- dfm_trim(dfmat_inter, max_docfreq = .1, docfreq_type = 'prop')
+dfmat_inter_docfreq
+```
+##Look up dictionary 
+```{r}
+#loading dictionary 
+LSD_dict<- data_dictionary_LSD2015
+
+dfmat_inter_sentiment<- dfm_lookup(dfmat_inter, dictionary = LSD_dict, levels = 1)
+dfmat_inter_sentiment
+
+#dfm_lookup cannot detect multi-word expressions since hte dfm does not store information about positions of words. They recommend using tokens_lookup() to detect or tokens-copound() to compound multi-word expressions before creating a DFM
+```
+##Group documents 
+```{r}
+#dfm_group() merges documents based on a vector given to the groups argument. In grouping documents it takes the sums of feature frequencies
+#dfmat_inter <- dfm_remove(dfmat_inter, stopwords('en'))
+dfmat_inter_exp<- dfm_group(dfmat_inter, groups = overall_experience)
+dfmat_inter_exp
+#dfm_group identifies document-level variables that are the same within gorups and keeps these variables 
+docvars(dfmat_inter_exp)
+```
+#Feature co-occurence matrix 
+This is different than a document frequency matrix (DFM). A feature co-occurence matrix (FCM) records the number of co-occurrences of tokens. This is a special objct in quanteda by behaves similarly to a DFM
+```{r}
+#Removing all objects excpet the data since it could get a little crowded in the environment 
+rm(list = setdiff(ls(), "interview_data"))
+
+```
+##Construct a FCM 
+This can be done from tokens or from a DFM 
+```{r}
+corpus_interview<- corpus(interview_data,docid_field = 'SID', text_field = 'text')
+toks_interview<- tokens(corpus_interview, remove_punct = T, remove_symbols = T, remove_numbers = T) %>%
+  tokens_select(., min_nchar = 2)
+dfmat_inter<- dfm(toks_interview, tolower = T) %>%
+  dfm_remove(., stopwords('en')) 
+
+dfmat_inter<- dfm_trim(dfmat_inter, min_termfreq = 5)
+dfmat_inter
+
+nfeat(dfmat_inter)
+
+fcmat_inter<-fcm(dfmat_inter)
+fcmat_inter
+
+topfeatures(fcmat_inter, n = 10)
+
+#Can use FCM select and features 
+feats<- names(topfeatures(fcmat_inter))
+fcmat_inter_select<- fcm_select(fcmat_inter, pattern = feats, selection = 'keep')
+fcmat_inter_select
+```
+##FCM semantic network analysis
+A FCM can be used to train word embedding models with the 'text2vec' package or to visualize a semantic network analysis with textplot_network()
+```{r}
+size <- log(colSums(dfm_select(dfmat_inter, feats, selection = "keep")))
+
+set.seed(144)
+textplot_network(fcmat_inter_select, min_freq = 0.8, vertex_size = size / max(size) * 3)
+
+experience_levels <- docvars(corpus_interview, "overall_experience")
+
+# Iterate over each category of overall_experience
+for (category in unique(experience_levels)) {
+    # Filter the corpus and DFM for the current category
+    subset_corpus <- corpus_interview[experience_levels == category]
+    
+    subset_toks<- tokens(subset_corpus, remove_punct = T, remove_symbols = T, remove_numbers = T)
+    
+    subset_dfm<- dfm(subset_toks, tolower = T) %>%
+      dfm_remove(., stopwords('en')) %>%
+      dfm_keep(., min_nchar = 2)
+     
+    #The top n features based off frequency. This can be adjusted to be based of co-occurrence 
+    current_feats<- names(topfeatures(subset_dfm, n = 10))
+    
+    # Compute the Feature Co-occurrence Matrix (FCM) for the subset. Have to do the 'fcm_select' in order to narrow down the words displayed 
+    fcm_subset <- fcm(subset_dfm) %>%
+      fcm_select(., pattern = current_feats, selection = 'keep')
+    
+    # Compute sizes for the network
+    size <- log(colSums(dfm_select(subset_dfm, pattern = current_feats, selection = "keep")))
+    
+    # Plot the semantic network for the subset
+    set.seed(144)  # For reproducibility
+    print(textplot_network(fcm_subset, min_freq = 0.5, vertex_size = size / max(size) * 3, omit_isolated = T)+
+            ggtitle(paste0("Overall Experience", " ", category)))
+  
+}
+```
+#Statistical Analysis 
+```{r}
+#Removing all objects except the data since it could get a little crowded in the environment 
+rm(list = setdiff(ls(), "interview_data"))
+```
+
+##Simple frequency analysis 
+```{r}
+corpus_inter<- corpus(interview_data, docid_field = 'SID', text_field = 'text')
+toks_inter<- tokens(corpus_inter, remove_punct = T, remove_symbols = T, remove_numbers = T) 
+dfmat_inter<- dfm(toks_inter, tolower = T) %>%
+  dfm_remove(., stopwords('en')) %>%
+  dfm_group(., groups = overall_experience)
+
+#textstat_frequency shows both term and document frequencies and can use hte function to find the most frequenct features within groups 
+tstat_freq<- textstat_frequency(dfmat_inter, n = 5, groups = overall_experience)
+tstat_freq
+
+#plotting version on ggplot with counts
+dfmat_inter %>%
+  textstat_frequency(n = 10, groups = overall_experience) %>%
+  ggplot(aes(x = reorder(feature, frequency), y = frequency, color = group))+
+  geom_point()+
+  coord_flip()+
+  labs(x = NULL, y = "frequency")+
+  theme_minimal()
+
+#word cloud 
+set.seed(123)
+textplot_wordcloud(dfmat_inter, max_words = 30)
+
+#wordcloud by groups
+textplot_wordcloud(dfmat_inter, comparison = T, max_words = 30)
+
+```
+##Lexical diversity 
+textstat_lexdiv() calculates various lexical diversity measures based on the number of unique types of tokens and lengh of document. 
+```{r}
+
+tstat_lexdiv<- textstat_lexdiv(dfmat_inter)
+tstat_lexdiv
+
+#Plot of the lexical diversity 
+plot(tstat_lexdiv$TTR, type = "l", xaxt = "n", xlab = NULL, ylab = "TTR")
+grid()
+axis(1, at = seq_len(nrow(tstat_lexdiv)), labels = dfmat_inter$overall_experience)
+```
+##Document/feature similarity 
+textstat_dist90 caluclates similarites of documents or features for various measures. THe output is compatible with Rs dist() so hierarchical clustering cna be performed without any transformation
+```{r}
+dfmat_inter<- dfm(toks_inter, tolower = T) %>%
+  dfm_remove(., stopwords('en')) %>%
+  dfm_group(., groups = docname_)
+
+tstat_dist<- as.dist(textstat_dist(dfmat_inter))
+clust<- hclust(tstat_dist)
+
+plot(clust, xlab = "Distance", ylab = NULL)
+```
+##Relative frequency analysis (keyness)
+using textstat_keyness() you cna compare frequencies of words between target and reference documents. In a tutorial the target documents are news articles published in 2016 and reference documents are those published in 2012-2015. In our example it will be the date of the interview review. The lubridate package to retrieve the year of review
+
+Keyness is signed two-by-two association score originally implemented in WordSmith to identify frequent words in documents in a target and reference group.
+
+The target group refers to the set of documents or texts that we are interested in analyzing while the reference group serves as a comparison set. 
+The goal is to identify words that are significantly more frequent in the target group compared to the reference group. 
+
+Chi-square metric: common statisitc that is used in the keyness analysis to measure association between word frequences and the groups being compared 
+it quanitifes how much the observed frequencies of words in the target group deviate from what would be expceted if there were no association between the words and the groups. 
+Higher chi-square values indicate stronger assocaitions between words and the target group. 
+
+
+```{r}
+#Redoing the corpus and tokens stage to remove the groups of 'overall_experience' that was created in the chunks above 
+corpus_inter<- corpus(interview_data, docid_field = 'SID', text_field = 'text')
+toks_inter<- tokens(corpus_inter, remove_punct = T, remove_symbols = T, remove_numbers = T)
+
+dfmat_inter<- dfm(toks_inter, tolower = T) %>%
+  dfm_remove(., stopwords('en')) %>%
+  dfm_keep(., min_nchar = 7) 
+
+tstat_key<- textstat_keyness(dfmat_inter,
+                             target = year(dfmat_inter$date) >= 2022)
+#For some reason we cannnot do all of the documents. Investigate this further.
+
+#plotting 
+textplot_keyness(tstat_key)
+
+#In our example what this means is that words with higher chi-square value have a stronger association for interview reviews that take place after 2022. This could be better with phrases and could help with identifying changing trends in the data as time goes on. So specifically the word 'applied' has a better association to beyond the year 2022 compared to 2021 and previous years. Could be that a hiring freeze or just less applicants took place that year 
+
+```
+##Collocation analysis 
+A collocation analysis allows us to identify contriguous collocation of words. One of the most common types of multi-word expressions are proper names which cna identified simply based on capialitzation in english texts. This is the tutorials demonstrastion and they are using the tokens_select function to manually look for specific things 
+
+This is different than a dictionary look-up because it uses statistical measures (log-liklihood ratio) for combinations of words and does not rely on predefiend lists of expressions but rather identifies significant patterns based on their frequency and co-occurrence within the corpus 
+```{r}
+#Redoing the corpus and tokens stage to remove the groups of 'overall_experience' that was created in the chunks above 
+corpus_inter<- corpus(interview_data, docid_field = 'SID', text_field = 'text')
+toks_inter<- tokens(corpus_inter, remove_punct = T, remove_symbols = T, remove_numbers = T)
+
+dfmat_inter<- dfm(toks_inter, tolower = T) %>%
+  dfm_remove(., stopwords('en'))
+
+dmat_top_feats<- topfeatures(dfmat_inter, n = 20)
+
+# Select tokens beginning with "interviewer" (case-sensitive) and generate collocations
+tstat_col_interviewer <- tokens_select(toks_inter, 
+                                       pattern = "^interview",  # Adjust regex pattern
+                                       valuetype = "regex", 
+                                       case_insensitive = T, 
+                                       padding = TRUE) %>% 
+                        textstat_collocations(min_count = 1)
+
+# Display the collocations
+print(tstat_col_interviewer)
+
+```
+#Advanced Operations
+```{r}
+#Removing all objects except the data since it could get a little crowded in the environment 
+rm(list = setdiff(ls(), "interview_data"))
+
+```
+
