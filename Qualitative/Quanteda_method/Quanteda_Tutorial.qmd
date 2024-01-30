@@ -24,6 +24,7 @@ library(quanteda)
 library(quanteda.textmodels)
 library(quanteda.textstats)
 library(quanteda.textplots)
+library(quanteda.sentiment)
 library(readtext)
 library(quanteda.corpora)
 library(spacyr)
@@ -31,6 +32,8 @@ library(newsmap)
 library(seededlda)
 library(text2vec) #Semantic network analysis
 library(lubridate)#needed for relative frequency analysis 
+library(caret)
+library(glmnet)
 #Packages needed for my own coding style 
 library(dplyr)
 library(tidyverse)
@@ -57,6 +60,8 @@ replace_text<- function(text){
   return(text)
   
 }
+source("~/Professional/Github_repositories/Professional_code/Pro_code_project/Dummy_coding_data.R")
+
 ```
 
 When loading data having a .csv file with a column containing the text is part of the tutorial
@@ -64,7 +69,10 @@ When loading data having a .csv file with a column containing the text is part o
 ```{r}
 interview_data<- read.csv("../../../../../Sample_data/KPMG_interview_responses.csv") %>%
   mutate(text = replace_text(text),
-         date = as.Date(date, format = "%m/%d/%Y"))
+         date = as.Date(date, format = "%m/%d/%Y"),
+         overall_experience_dummy = case_when(overall_experience == "positive"~1,
+                                              overall_experience == "neutral"~0,
+                                              overall_experience == "negative"~-1))
 ```
 
 #Workflow: There are three basic types of objects in Quanteda. 
@@ -546,6 +554,306 @@ print(tstat_col_interviewer)
 ```{r}
 #Removing all objects except the data since it could get a little crowded in the environment 
 rm(list = setdiff(ls(), "interview_data"))
+
+```
+
+##Compute similarity between authors 
+we can compute the similarities between authors by grouping their documents and comparing them with all other authors. In the tutorial they group twitter posts by handle names and similarities between the users. we are going to try and find the similarities and dissimilarities between 'overall_experience'
+```{r}
+corpus_inter<- corpus(interview_data, docid_field = 'SID', text_field = 'text')
+toks_inter<- tokens(corpus_inter, remove_punct = T, remove_symbols = T, remove_numbers = T) 
+dfmat_inter<- dfm(toks_inter, tolower = T) %>%
+  dfm_remove(., stopwords('en')) %>%
+  dfm_group(., groups = overall_experience)
+
+ndoc(dfmat_inter)
+
+#Remove rare (less than 3 times) and short (one character) features and keep reviews that are 10 tokens or more. 
+dfmat_exp<- dfmat_inter %>%
+  dfm_select(min_nchar = 2) %>%
+  dfm_trim(min_termfreq = 3) 
+
+dfmat_exp<- dfmat_exp[ntoken(dfmat_exp) > 10,]
+
+#claculate overall experience similarity using textstat_dist()
+
+tstat_dist<- as.dist(textstat_dist(dfmat_exp))
+exp_clust<- hclust(tstat_dist)
+plot(exp_clust)
+
+#This was very similar to the 'Document/feature similarity' chunk above
+```
+##Compound multi-word expressions
+We can compound multi-word expression through collocation analysis. In the tutorial example they clarify sequences of capitalized words and compound them as proper names. For our purpose 
+```{r}
+toks_interviewer<- tokens_select(toks_inter, 
+                                pattern = "\\b(HR|manager|partner|panel|interviewer|recruiter)\\b",
+                                valuetype = 'regex',
+                                case_insensitive = F,
+                                padding = T)
+
+tstat_interviewer<- textstat_collocations(toks_interviewer, min_count = 1)
+tstat_interviewer
+
+#Compounding only stronger associated multi-word expressions by subsetting the tstat_interviewere object where z>3
+
+toks_comp<- tokens_compound(toks_interviewer, pattern = tstat_interviewer[tstat_interviewer$z >3,],
+                            case_insensitive = F)
+kw_comp<- kwic(toks_comp, pattern = "HR_*")
+kw_comp
+```
+##Apply Dictionary to specific contexts 
+Wew can detect occurrences of words in specific contexts by selectively applying dictionary. In the tutorial example they applie a sentiment dictionary to segments of news articles that mentions the "British Government" 
+
+For our example i am applying a sentiment dictionary to text that mentions an interviewer
+```{r}
+interviewer<- c("interviewer", "HR",'hr','partner', 'manager', 'panel', 'Recruiter')
+#Tokenize texts and select tokens surrounding keywords related to the interviewer using the 'tokens_keep' function
+toks_interviewer<- tokens_keep(toks_inter, pattern = phrase(interviewer), window = 10)
+
+#Apply the lexicoder sentiment dictionary to the selected context 
+lengths(data_dictionary_LSD2015)
+
+#Select only the negative and positive sentiment categories from the dictionary 
+data_dictionary_LSD2015_pos_neg<- data_dictionary_LSD2015[1:2]
+
+toks_interviewer_pos_neg<- tokens_lookup(toks_interviewer, dictionary = data_dictionary_LSD2015_pos_neg)
+
+#Overall experience compared to sentiment words 
+dfmat_interviewer<- dfm(toks_interviewer_pos_neg) %>%
+  dfm_group(groups = overall_experience)
+
+#plotting 
+matplot(as.factor(dfmat_interviewer$overall_experience), dfmat_interviewer, type = 'l', lty = 1, col = 1:2, ylab="Frequency", xlab = "")
+grid()
+legend('topleft', col = 1:2, legend = colnames(dfmat_interviewer), lty = 1, bg = 'white')
+
+
+#Date compared to sentiment words 
+dfmat_interviewer<- dfm(toks_interviewer_pos_neg) %>%
+  dfm_group(groups = date)
+
+#plotting 
+matplot(dfmat_interviewer$date, dfmat_interviewer, type = 'l', lty = 1, col = 1:2, ylab="Frequency", xlab = "")
+grid()
+legend('topleft', col = 1:2, legend = colnames(dfmat_interviewer), lty = 1, bg = 'white')
+
+#Offer extended to sentiemnt words 
+dfmat_interviewer<- dfm(toks_interviewer_pos_neg) %>%
+  dfm_group(groups = offer)
+
+#plotting 
+matplot(as.factor(dfmat_interviewer$offer), dfmat_interviewer, type = 'l', lty = 1, col = 1:2, ylab="Frequency", xlab = "")
+grid()
+legend('topright', col = 1:2, legend = colnames(dfmat_interviewer), lty = 1, bg = 'white')
+
+
+#Can compute the sentiment scores by taking the differnce between the fequency of positive and negative words over the years
+dfmat_interviewer<- dfm(toks_interviewer_pos_neg) %>%
+  dfm_group(groups = date)
+
+plot(dfmat_interviewer$date, 
+     dfmat_interviewer[, 'positive'] - dfmat_interviewer[, 'negative'],
+     type = 'l', ylab= 'Sentiment Scores', xlab = "")
+grid()
+abline(h = 0, lty = 2)
+
+#Apply a kernel smoothing ot show the trend more clearly 
+dat_smooth<- ksmooth(dfmat_interviewer$date,
+                     y = dfmat_interviewer[, 'positive'] - dfmat_interviewer[, 'negative'],
+                     kernel = 'normal',
+                     bandwidth = 30)
+plot(dat_smooth$x, dat_smooth$y, type = 'l', ylab = "Sentiment Scores", xlab = "")
+grid()
+abline(h =0, lty = 2)
+```
+##Identify related words of keywords
+we can identify related words of keywords based on their distance in the documents. In the tutorial they created a list of words related to the european union by comparing frequency of words inside and outside of their contexts 
+```{r}
+#Selecting two tokens objects for words inside and outside of the 10-word windows of the keywords (keys)
+keys<- c("interviewer", "manager", "hr","HR","partner","recruiter", "director")
+toks_inside<- tokens_keep(toks_inter, pattern = keys, window = 10)
+toks_inside<- tokens_remove(toks_inside, patter = keys) #removing hte keywords
+toks_outside<- tokens_remove(toks_inter, pattern = keys, window =10)
+
+#Compute words' association with the keywords using textstat_keyness()
+dfmat_inside <- dfm(toks_inside) %>%
+  dfm_remove(., stopwords('en'))
+dfmat_outside <- dfm(toks_outside) %>%
+  dfm_remove(., stopwords('en'))
+
+tstat_key_inside <- textstat_keyness(rbind(dfmat_inside, dfmat_outside), 
+                                     target = seq_len(ndoc(dfmat_inside)))
+head(tstat_key_inside, 50)
+
+#Explanation of output:The keyness metric (often based on the chi-square statistic or other statistical measures) helps identify words or features that occur significantly more frequently within the specified context compared to outside of it. In this case, "interview" is deemed to be highly associated with the context defined by your keywords, suggesting that it frequently occurs within the proximity of these terms in your text corpus.
+
+
+```
+#Text Scaling and Classification
+How to derive latent positions from text data and how to classify documents 
+```{r}
+#Removing all objects except the data since it could get a little crowded in the environment 
+rm(list = setdiff(ls(), "interview_data"))
+```
+##Naive Bayes Classifier
+Naive Bayes is a supervised model usually used to classify documents into two or more categories. We train the classifier using labels attached to documents, and predict the most likely class(es) of new unlabeled documents 
+```{r}
+#In the tutorial they are using 2000 movie reviews and they have the movie reviews classified as 'positive' or 'negative' in the 'sentiment' column we have something similar in the 'overall_experience' column but we only have 70 reviews. The process will go with 52 Interviews to be trained and 18 to be tested. 
+
+#Create corpus
+corpus_inter<- corpus(interview_data)
+
+set.seed(123)
+id_train<- sample(1:nrow(interview_data), (70 * .8), replace = F)
+
+#Create docvar with ID 
+corpus_inter$id_numeric<- 1:ndoc(corpus_inter)
+
+#tokenizing 
+toks_inter<- tokens(corpus_inter, remove_punct = T, remove_numbers = T )%>%
+  tokens_remove(pattern = stopwords('en'))
+
+dfmat_inter<- dfm(toks_inter) %>%
+  dfm_keep(.,  min_nchar = 2)
+
+#get training set 
+dfmat_inter_train<- dfm_subset(dfmat_inter, id_numeric %in% id_train)
+
+#Get testing set 
+dfmat_inter_test<- dfm_subset(dfmat_inter, !id_numeric %in% id_train)
+
+#Training the NB classifier 
+tmod_nb<- textmodel_nb(x = dfmat_inter_train, y = dfmat_inter_train$overall_experience, prior = 'docfreq', distribution = 'multinomial')
+summary(tmod_nb)
+
+#The coeficients represent how close the features are to being associated with the intended class. So a higher coeficient would mean a stronger association between that feature and class
+
+#Naive Bayes can only take features into consideration that occur both in the training set and the test set, but we can make the features identical using dfm_match()
+
+dfmat_matched<- dfm_match(dfmat_inter_test, features = featnames(dfmat_inter_train))
+
+#See how well the classification worked. 
+actual_class<- dfmat_matched$overall_experience
+predicted_class<- predict(tmod_nb, newdata = dfmat_matched)
+tab_class<- table(actual_class, predicted_class)
+tab_class
+
+#A good bit of incorrect classifciation but the n is very low so that is predicted. Confusion matrix to give overall model accuracy
+confusionMatrix(tab_class, mode = "everything", positive = "positive")
+
+#Precision, recall and the F1 score are frequently used to assess the classification performance. 
+#Precision is measured as TP / (TP + FP), where TP are the number of true positives and FP are the false positives. 
+#Recall divides the true positives by the sum of true positives and false negatives TP / (TP + FN). 
+#Finally, the F1 score is a harmonic mean of precision and recall 2 * (Precision * Recall) / (Precision + Recall).
+
+#This could be useful because if there is a good enough 
+
+
+```
+##Regularized Regression Classifier. Did not work with my example since the data was too small but it worked with the tutorial examples
+Regularized regression is a classification technique where the categroy of interest is regressed on text features using a penalized form of regression where parameter estimates are biased towards 0. Here we will be using a specifc type of regularized regression, the Least Absolute Shrinkage and Selection Operator (LASSO) simialr to the ridge regression. 
+
+In the LASSO the degree of penalization is determined by a regularization parameter lambda. We can use the cross-validation function available in the blmnet pacakge to select the optimal value ofr lambda. We train the classifier using lass labels attached ot documents and predict the most liekly class(ses) of new unlabelled document.s Althought regularized regression is not part of the quanteda.textmodels package, the functions for regularized regression from the the glmnet package can be easily worked into a qunteda workflow. 
+
+The tutorial online used the same data for the naive bayesian walkthrough so we are going to do the same and save some time 
+```{r}
+#Here are the training and testing sets from the naive bayesian walkthrough
+dfmat_inter_train
+dfmat_inter_test
+
+#Next we choose lamda using cv.glmnet from the glmnet package. cv.glmnet requires an input matrix x and a response vector y. For the input matrix we will use the training set converted to a psare matrix. For the response vector we will use a trichotmous indicator of review snetiment in the trainin set with positive reviews coded as 1 and negative reviews coded as -1 and neutral coded as 0 
+
+lasso<- cv.glmnet(x = dfmat_inter_train,
+                  y = dfmat_inter_train$overall_experience_dummy,
+                  alpha = 1,
+                  nfold = 5, 
+                  family = "multinomial")
+#As an initial evaluation of the model we can print the most predictive features. We begin by obtaining the best value of lambda 
+index_best <- which(lasso$lambda == lasso$lambda.min)
+beta <- lasso$glmnet.fit$beta[index_best]
+
+
+```
+
+##Wordscoresf(typically used for positions (mostly for political actors). Given that I am going to move onto someting else 
+```{r}
+
+```
+
+##Wordfish
+Wordfish is a Poisson scaling model of one-dimensional document positions. Wordifsh also allows for scaling documents but in comparison to wordscores, reference scores/ texts are not required. Wordfish is an unsupervised one-dimensional text scaling method, meaning that it estimates the positions of documents solely based on the observed word frequencies
+
+I don't really understand this all that much 
+```{r}
+tmod_wf<- textmodel_wordfish(dfmat_inter, dir = c(6,5))
+summary(tmod_wf)
+textplot_scale1d(tmod_wf)
+#Textplot with groups 
+textplot_scale1d(tmod_wf, groups = dfmat_inter$overall_experience)
+
+#Textplot of specific words
+textplot_scale1d(tmod_wf, margin = "features", 
+                 highlighted = c("interview", "hr","manager","recruiter","partner", "round"))
+```
+##Correspondence analysis 
+Correspondence analysis is a technique to scale documents on multiple dimensions. Correspondence analysis is similar to principal component analysis but works for categorical variables (contingency table).
+```{r}
+tmod_ca<- textmodel_ca(dfmat_inter)
+
+#plotting
+textplot_scale1d(tmod_ca)
+
+
+#plot documents on multi-dimensional scale
+dat_ca<- data.frame(dim1 = coef(tmod_ca, doc_dim = 1)$coef_document,
+                    dim2 = coef(tmod_ca, doc_dim = 2)$coef_document)
+dat_ca
+
+#Plotting multiple dimensions
+plot(1, xlim = c(-2, 2), ylim = c(-2, 2), type = "n", xlab = "Dimension 1", ylab = "Dimension 2")
+grid()
+text(dat_ca$dim1, dat_ca$dim2, labels = rownames(dat_ca), cex = 0.8, col = rgb(0, 0, 0, 0.7))
+```
+
+##Topic modeling 
+topics models are unsupervised document classification techniques. By modeling distributions of topics over words and words over documents, topic models identify the most discriminatory groups of documents automatically. 
+```{r}
+#Token creation and document frequency matrix with cleaning 
+toks_inter<- tokens(corpus_inter, remove_punct = T, remove_numbers = T, remove_symbols = T)%>%
+  tokens_remove(pattern = stopwords('en'))
+
+#After removing stopwords, numbers, punctuation, symbols we wil lonly keep the top 20% of the most frequent features (min_termfreq = .8) that appear in less than 10% of all documents (max_docfreq = .1) using dfm_trim() to focus on common but distinguishing features 
+dfmat_inter<- dfm(toks_inter) %>%
+  dfm_keep(.,  min_nchar = 2) %>%
+  dfm_trim(min_termfreq = .8, termfreq_type = 'quantile',
+           max_docfreq = .1, docfreq_type = 'prop')
+```
+### Latent Dirichlet Allocation (LDA). Quanteda does not implement but fits it using other packages 
+```{r}
+#K = 5 specifies the number of topcis to be discovered this is an important parameters that needs to be played with and validated 
+tmod_lda<- textmodel_lda(dfmat_inter, k = 5)
+terms(tmod_lda,10)
+
+#We can then obtain the most likely toics using topics() and save them as a document-level variable
+head(topics(tmod_lda), 20)
+
+# assign topic as a new document-level variable
+dfmat_inter$topic <- topics(tmod_lda)
+
+# cross-table of the topic frequency
+table(dfmat_inter$topic)
+```
+###Seeded LDA
+In the seeded LDA we can pre-define topics in LDA using a dictionary of seed words. THe key here is building the dictionary to be used for future use.
+```{r}
+#The number of topics is determined by the number of keys in the dictionary. Next, we can fit the seeded LDA model using textmodel_seededlda() and specify the dictionary with our relevant keywords.
+LSD_dict<- data_dictionary_LSD2015[1:2]
+tmod_slda<- textmodel_seededlda(dfmat_inter, dictionary = LSD_dict)
+
+terms(tmod_slda,20)
+
+
 
 ```
 
